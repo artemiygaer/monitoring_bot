@@ -1,0 +1,8 @@
+.env
+__pycache__/
+.pytest_cache/
+.venv/
+tests/
+*.pyc
+monitoring-bot-debian-amd64.tar
+server_bundle_debian/

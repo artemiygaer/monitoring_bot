@@ -1,0 +1,12 @@
+services:
+  monitoring-bot:
+    image: monitoring-bot:debian-amd64
+    pull_policy: never
+    container_name: monitoring-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - /:/hostfs:ro
