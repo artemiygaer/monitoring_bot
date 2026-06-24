@@ -6,12 +6,12 @@
 
 - Пользователь общается на русском и просит отвечать коротко.
 - Документация и комментарии в коде должны быть на русском.
-- Рабочая папка: `H:\bot\monitoring_v3`.
-- Это не git-репозиторий.
+- Рабочая папка: `H:\bot\monitoring_v3.5`.
+- Это **git-репозиторий**, origin: `https://github.com/artemiygaer/monitoring_bot.git`.
 - Бот запускается на удалённых Debian-серверах в Docker, не локально на Windows.
 - Подготовка и тестирование выполняются локально через Docker Desktop.
 - Основной compose-файл: `docker-compose.bot.yml`.
-- Целевые deploy-архивы: `deploy_server1.tar.gz` и `deploy_server2.tar.gz`.
+- Готовые артефакты публикуются через GitHub Actions: образ в `ghcr.io/artemiygaer/monitoring_bot`, архив `monitoring-bot-debian-amd64.tar.gz` + `SHA256SUMS.txt` в GitHub Release.
 - Не выводить содержимое `.env`, Telegram token и полный вывод `docker compose config`.
 
 ## Что Реализовано
@@ -31,9 +31,10 @@
 - ручная очистка `__pycache__`, `.pytest_cache` и `tmp*` кнопкой `Очистка`;
 - главное меню: `Сводка`, `Ресурсы`, `Контейнеры`, `Бекап`, `Команды`, `Система`, `Обновить`;
 - редкие действия (`Очистка`, `Ошибки входа`, `О боте`) находятся в подменю `Система`;
-- сборка серверного комплекта через `build_server_bundle.ps1`;
 - оптимизация ОЗУ/CPU: TTL-очистка сессий, лимит логов, потоковое чтение login-логов, лёгкий Docker API для списков контейнеров;
-- Docker-образ на базе Alpine.
+- Docker-образ на базе Alpine;
+- CI через GitHub Actions: pytest + compileall, buildx → ghcr.io (linux/amd64 + linux/arm64), Release на тег `v*.*.*`;
+- `deploy.sh` поддерживает три источника: tar из Release, pull из `ghcr.io`, локальная сборка из Dockerfile.
 
 ## Важные Файлы
 
@@ -50,13 +51,17 @@
 - `app/command_worker.py` — выполнение команды на хосте через `nsenter` и `chroot`.
 - `app/backup.py` — список архивов, команды создания и удаления бекапа.
 - `app/maintenance.py` — команда очистки временных каталогов.
-- `.env.example`, `README.md` и `build_server_bundle.ps1` — синхронизировать при новых env-переменных.
+- `.github/workflows/ci.yml` — pytest + compileall.
+- `.github/workflows/docker.yml` — buildx → ghcr.io.
+- `.github/workflows/release.yml` — Release с `.tar.gz` + `SHA256SUMS.txt`.
+- `.env.example`, `README.md`, `README.en.md` — синхронизировать при новых env-переменных.
+- `.gitattributes` — принудительный LF для `*.sh`, `*.yml`, `Dockerfile`, `*.md`.
 
 ## Перед Изменениями
 
 ```powershell
 Get-ChildItem -Force
-rg --files -g "!__pycache__" -g "!.pytest_cache"
+git status
 python -m pytest -q
 ```
 
@@ -65,13 +70,19 @@ python -m pytest -q
 ```powershell
 python -m pytest -q
 python -m compileall -q app tests
-docker build -t monitoring-bot:debian-amd64 .
-docker save -o monitoring-bot-debian-amd64.tar monitoring-bot:debian-amd64
-.\build_server_bundle.ps1
-docker run --rm monitoring-bot:debian-amd64 python -c "import app.main; print('image ok')"
+git add -A
+git status
+git commit -m "<сообщение>"
+git push
+git tag -a vX.Y.Z -m "Release vX.Y.Z"  # только для релиза
+git push origin vX.Y.Z                  # только для релиза
 ```
 
-Если менялся серверный комплект, обновить `deploy_server1.tar.gz` и `deploy_server2.tar.gz`, сохранив их индивидуальные `.env`.
+Если тег `vX.Y.Z` запушен, GitHub Actions автоматически:
+- пересоберёт образ в `ghcr.io/artemiygaer/monitoring_bot:X.Y.Z` (multi-arch);
+- создаст Release с артефактами `monitoring-bot-debian-amd64.tar.gz` и `SHA256SUMS.txt`.
+
+Локальная сборка Docker больше не требуется — образ уже публикуется CI.
 
 ## Если Docker Desktop Выключен
 
@@ -84,7 +95,8 @@ docker version
 
 ## Правила Для Правок
 
-- Если меняется код в `app`, пересобрать образ и bundle.
-- Если добавляется env-переменная, обновить `app/config.py`, `.env.example`, `build_server_bundle.ps1` и README.
+- Если меняется код в `app`, прогнать `pytest` и `compileall`, закоммитить, запушить.
+- Если добавляется env-переменная, обновить `app/config.py`, `.env.example`, `README.md`, `README.en.md`.
 - Если меняется Telegram-меню, проверить `app/keyboards.py`, `app/handlers.py`, `app/formatters.py` и тесты.
-- Если меняется серверный deploy, проверить `server_bundle_debian` через `build_server_bundle.ps1`.
+- Если меняется deploy, проверить `deploy.sh` и `server_bundle_debian/deploy.sh` (они должны быть идентичны).
+- Если меняется CI/workflow, проверить YAML-синтаксис (`python -c "import yaml; yaml.safe_load(open('.github/workflows/X.yml'))"`).

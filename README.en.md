@@ -1,5 +1,13 @@
 # Telegram Bot for Docker Compose Monitoring (V2)
 
+[![CI](https://github.com/artemiygaer/monitoring_bot/actions/workflows/ci.yml/badge.svg)](https://github.com/artemiygaer/monitoring_bot/actions/workflows/ci.yml)
+[![Docker](https://github.com/artemiygaer/monitoring_bot/actions/workflows/docker.yml/badge.svg)](https://github.com/artemiygaer/monitoring_bot/actions/workflows/docker.yml)
+[![Release](https://img.shields.io/github/v/release/artemiygaer/monitoring_bot)](https://github.com/artemiygaer/monitoring_bot/releases/latest)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
+[![Docker Image](https://ghcr.io/artemiygaer/monitoring_bot)](https://github.com/artemiygaer/monitoring_bot/pkgs/container/monitoring_bot)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![Platform](https://img.shields.io/badge/platform-Debian%20%2F%20Linux-blue)
+
 Decentralized Telegram bot for monitoring Debian servers. Each server runs independently, providing full control through an isolated node.
 
 ## Key Features
