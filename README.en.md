@@ -45,14 +45,32 @@ Rare actions are moved to `System` so the bottom keyboard is not overloaded.
 
 ## Quick Start (Deployment)
 
+### Option A: via GitHub Release (no build on the server)
+
 1. **Prepare**: Get a token from @BotFather.
-2. **Transfer archive**: Copy `deploy_serverX.tar.gz` to the server.
-3. **Configure**: Edit `.env` inside the archive (set token and server name).
+2. **Transfer archive**: Download `monitoring-bot-debian-amd64.tar.gz` and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/artemiygaer/monitoring_bot/releases/latest).
+3. **Configure**: Create `.env` from `.env.example` (set token and server name).
 4. **Run**:
 ```bash
-tar -xzf deploy_serverX.tar.gz
+mkdir -p /opt/monitoring-bot && cd /opt/monitoring-bot
+curl -L -o monitoring-bot-debian-amd64.tar.gz https://github.com/artemiygaer/monitoring_bot/releases/latest/download/monitoring-bot-debian-amd64.tar.gz
+curl -L -o SHA256SUMS.txt https://github.com/artemiygaer/monitoring_bot/releases/latest/download/SHA256SUMS.txt
+curl -L -o docker-compose.bot.yml https://raw.githubusercontent.com/artemiygaer/monitoring_bot/main/docker-compose.bot.yml
+sha256sum -c SHA256SUMS.txt
 bash deploy.sh
 ```
+
+### Option B: via git clone (image is pulled from ghcr.io)
+
+```bash
+git clone https://github.com/artemiygaer/monitoring_bot.git /opt/monitoring-bot
+cd /opt/monitoring-bot
+cp .env.example .env
+nano .env   # set BOT_TOKEN, ALLOWED_USER_IDS, MONITOR_SERVER_NAME
+bash deploy.sh
+```
+
+`deploy.sh` auto-detects the source: if `monitoring-bot-debian-amd64.tar` is present, it loads it; otherwise it pulls `ghcr.io/artemiygaer/monitoring_bot:latest`.
 
 ## How It Works
 - The bot runs in Docker with access to `/var/run/docker.sock`.

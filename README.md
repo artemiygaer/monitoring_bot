@@ -45,14 +45,32 @@
 
 ## Быстрый старт (Развертывание)
 
+### Вариант A: через GitHub Release (без сборки на сервере)
+
 1. **Подготовка**: Получите токен у @BotFather.
-2. **Перенос архива**: Скопируйте `deploy_serverX.tar.gz` на сервер.
-3. **Настройка**: Отредактируйте `.env` внутри архива (укажите токен и имя сервера).
+2. **Перенос архива**: Скачайте `monitoring-bot-debian-amd64.tar.gz` и `SHA256SUMS.txt` из [GitHub Release](https://github.com/artemiygaer/monitoring_bot/releases/latest).
+3. **Настройка**: Создайте `.env` из `.env.example` (укажите токен и имя сервера).
 4. **Запуск**:
 ```bash
-tar -xzf deploy_serverX.tar.gz
+mkdir -p /opt/monitoring-bot && cd /opt/monitoring-bot
+curl -L -o monitoring-bot-debian-amd64.tar.gz https://github.com/artemiygaer/monitoring_bot/releases/latest/download/monitoring-bot-debian-amd64.tar.gz
+curl -L -o SHA256SUMS.txt https://github.com/artemiygaer/monitoring_bot/releases/latest/download/SHA256SUMS.txt
+curl -L -o docker-compose.bot.yml https://raw.githubusercontent.com/artemiygaer/monitoring_bot/main/docker-compose.bot.yml
+sha256sum -c SHA256SUMS.txt
 bash deploy.sh
 ```
+
+### Вариант B: через git clone (образ подтянется из ghcr.io)
+
+```bash
+git clone https://github.com/artemiygaer/monitoring_bot.git /opt/monitoring-bot
+cd /opt/monitoring-bot
+cp .env.example .env
+nano .env   # укажите BOT_TOKEN, ALLOWED_USER_IDS, MONITOR_SERVER_NAME
+bash deploy.sh
+```
+
+`deploy.sh` сам определит способ: если рядом есть `monitoring-bot-debian-amd64.tar` — загрузит его, иначе попробует `docker pull ghcr.io/artemiygaer/monitoring_bot:latest`.
 
 ## Как это работает
 - Бот запускается в Docker с доступом к `/var/run/docker.sock`.
