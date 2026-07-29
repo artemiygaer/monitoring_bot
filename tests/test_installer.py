@@ -100,13 +100,13 @@ class InstallerTests(unittest.TestCase):
         release_dir = self.install_dir / "release"
         target_dir = self.install_dir / "target"
         release_dir.mkdir()
-        files = {
+        release_files = {
             "install.sh": "#!/usr/bin/env bash\nset -e\ntouch github-bootstrap-called\n",
             "deploy.sh": "#!/usr/bin/env bash\nset -e\n",
             "docker-compose.bot.yml": "services: {}\n",
-            ".env.example": "BOT_TOKEN=\nALLOWED_USER_IDS=\n",
+            "default.env.example": "BOT_TOKEN=\nALLOWED_USER_IDS=\n",
         }
-        for name, content in files.items():
+        for name, content in release_files.items():
             (release_dir / name).write_text(content, encoding="utf-8", newline="\n")
 
         result = subprocess.run(
@@ -130,8 +130,9 @@ class InstallerTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertTrue((target_dir / "github-bootstrap-called").is_file())
-        for name in files:
+        for name in ("install.sh", "deploy.sh", "docker-compose.bot.yml", ".env.example"):
             self.assertTrue((target_dir / name).is_file(), name)
+        self.assertFalse((target_dir / "default.env.example").exists())
 
 
 if __name__ == "__main__":

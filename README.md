@@ -76,9 +76,10 @@ curl -fsSL https://raw.githubusercontent.com/artemiygaer/monitoring_bot/main/ins
 ```bash
 mkdir -p /opt/monitoring-bot && cd /opt/monitoring-bot
 base_url="https://github.com/artemiygaer/monitoring_bot/releases/latest/download"
-for file in monitoring-bot-debian-amd64.tar.gz SHA256SUMS.txt install-from-github.sh install.sh deploy.sh docker-compose.bot.yml .env.example; do
+for file in monitoring-bot-debian-amd64.tar.gz SHA256SUMS.txt install-from-github.sh install.sh deploy.sh docker-compose.bot.yml; do
   curl -fL -O "$base_url/$file"
 done
+curl -fL "$base_url/default.env.example" -o .env.example
 chmod +x install-from-github.sh install.sh deploy.sh
 sha256sum -c SHA256SUMS.txt
 bash install.sh

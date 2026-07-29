@@ -13,17 +13,18 @@ fail() {
 }
 
 download_file() {
-  local name="$1"
-  local destination="$INSTALL_DIR/$name"
+  local remote_name="$1"
+  local local_name="${2:-$remote_name}"
+  local destination="$INSTALL_DIR/$local_name"
   local temporary
 
-  temporary="$(mktemp "$INSTALL_DIR/.${name}.tmp.XXXXXX")"
+  temporary="$(mktemp "$INSTALL_DIR/.${local_name}.tmp.XXXXXX")"
   if ! curl --fail --location --silent --show-error \
     --retry 3 --connect-timeout 15 \
-    "$RELEASE_BASE/$name" \
+    "$RELEASE_BASE/$remote_name" \
     --output "$temporary"; then
     rm -f -- "$temporary"
-    fail "не удалось скачать $name из GitHub Release"
+    fail "не удалось скачать $remote_name из GitHub Release"
   fi
   chmod 600 "$temporary"
   mv -f -- "$temporary" "$destination"
@@ -62,9 +63,10 @@ fi
   fail "нет прав на запись в $INSTALL_DIR; запусти команду через sudo"
 
 echo "Скачиваю установщик из GitHub Release..."
-for file in install.sh deploy.sh docker-compose.bot.yml .env.example; do
+for file in install.sh deploy.sh docker-compose.bot.yml; do
   download_file "$file"
 done
+download_file "default.env.example" ".env.example"
 
 if [[ "$download_archive" == "true" && "$REQUESTED_SOURCE" != "ghcr" ]]; then
   download_file "$ARCHIVE_NAME"
