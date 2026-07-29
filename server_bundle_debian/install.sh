@@ -5,6 +5,7 @@ CONFIG_ONLY=false
 NON_INTERACTIVE=false
 INSTALL_DIR="$(pwd)"
 ENV_FILE=""
+PROMPT_INPUT="/dev/stdin"
 
 usage() {
   cat <<'EOF'
@@ -56,6 +57,10 @@ while (($#)); do
   esac
 done
 
+if [[ "$NON_INTERACTIVE" != "true" && -r /dev/tty ]]; then
+  PROMPT_INPUT="/dev/tty"
+fi
+
 [[ -d "$INSTALL_DIR" ]] || fail "каталог установки не найден: $INSTALL_DIR"
 [[ -w "$INSTALL_DIR" ]] || fail "нет прав на запись в каталог установки: $INSTALL_DIR"
 cd "$INSTALL_DIR"
@@ -103,7 +108,9 @@ prompt_visible() {
     else
       printf '%s: ' "$label" >&2
     fi
-    IFS= read -r entered
+    if ! IFS= read -r entered < "$PROMPT_INPUT"; then
+      fail "интерактивный ввод недоступен; используй --non-interactive"
+    fi
     entered="${entered:-$default_value}"
     if [[ "$required" != "true" || -n "$entered" ]]; then
       REPLY_VALUE="$entered"
@@ -123,7 +130,9 @@ prompt_secret() {
     else
       printf 'Токен Telegram: ' >&2
     fi
-    IFS= read -r -s entered
+    if ! IFS= read -r -s entered < "$PROMPT_INPUT"; then
+      fail "интерактивный ввод недоступен; используй --non-interactive"
+    fi
     echo >&2
     if [[ -n "$entered" ]]; then
       REPLY_VALUE="$entered"
@@ -196,7 +205,7 @@ else
   alert_ids="$REPLY_VALUE"
   prompt_visible "Уведомлять о старте: true/false" "${existing_notify:-false}" true
   notify_startup="$REPLY_VALUE"
-  prompt_visible "Источник образа: auto/ghcr/archive/build" "auto" true
+  prompt_visible "Источник образа: auto/ghcr/archive/build" "${MONITOR_INSTALL_SOURCE:-auto}" true
   install_source="$REPLY_VALUE"
 fi
 

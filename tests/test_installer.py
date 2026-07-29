@@ -96,6 +96,43 @@ class InstallerTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("ID должны быть числами", result.stderr)
 
+    def test_github_bootstrap_downloads_release_files_and_starts_installer(self) -> None:
+        release_dir = self.install_dir / "release"
+        target_dir = self.install_dir / "target"
+        release_dir.mkdir()
+        files = {
+            "install.sh": "#!/usr/bin/env bash\nset -e\ntouch github-bootstrap-called\n",
+            "deploy.sh": "#!/usr/bin/env bash\nset -e\n",
+            "docker-compose.bot.yml": "services: {}\n",
+            ".env.example": "BOT_TOKEN=\nALLOWED_USER_IDS=\n",
+        }
+        for name, content in files.items():
+            (release_dir / name).write_text(content, encoding="utf-8", newline="\n")
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    f'MONITOR_INSTALL_DIR="$PWD/{self.relative_dir}/target" '
+                    f'MONITOR_GITHUB_RELEASE_BASE="file://$PWD/{self.relative_dir}/release" '
+                    "MONITOR_INSTALL_SOURCE=ghcr "
+                    "bash ./install-from-github.sh"
+                ),
+            ],
+            cwd=self.repo,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue((target_dir / "github-bootstrap-called").is_file())
+        for name in files:
+            self.assertTrue((target_dir / name).is_file(), name)
+
 
 if __name__ == "__main__":
     unittest.main()

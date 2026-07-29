@@ -23,6 +23,7 @@ New-Item -ItemType Directory -Path $resolvedBundlePath | Out-Null
 $publicFiles = @(
     "docker-compose.bot.yml",
     "README.md",
+    "install-from-github.sh",
     "deploy.sh",
     "install.sh",
     ".env.example"

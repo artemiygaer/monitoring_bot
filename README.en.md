@@ -63,13 +63,23 @@ Rare actions are moved to `System` so the bottom keyboard is not overloaded.
 
 Docker Engine and the Compose plugin must already be installed on Debian. The installer does not change APT sources or install Docker.
 
+Install the latest Release with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/artemiygaer/monitoring_bot/main/install-from-github.sh | sudo bash
+```
+
+The script downloads public Release files to `/opt/monitoring-bot`, verifies the image checksum, and starts interactive configuration. ARM64 automatically uses the multi-arch GHCR image.
+
+Manual download of the same files:
+
 ```bash
 mkdir -p /opt/monitoring-bot && cd /opt/monitoring-bot
 base_url="https://github.com/artemiygaer/monitoring_bot/releases/latest/download"
-for file in monitoring-bot-debian-amd64.tar.gz SHA256SUMS.txt install.sh deploy.sh docker-compose.bot.yml; do
+for file in monitoring-bot-debian-amd64.tar.gz SHA256SUMS.txt install-from-github.sh install.sh deploy.sh docker-compose.bot.yml .env.example; do
   curl -fL -O "$base_url/$file"
 done
-chmod +x install.sh deploy.sh
+chmod +x install-from-github.sh install.sh deploy.sh
 sha256sum -c SHA256SUMS.txt
 bash install.sh
 ```
@@ -103,6 +113,13 @@ unset MONITOR_INSTALL_BOT_TOKEN
 ```
 
 Supported sources are `auto` (default), `ghcr`, `archive`, and `build`; set `MONITOR_INSTALL_SOURCE` in non-interactive mode. `deploy.sh` supports `monitoring-bot-debian-amd64.tar.gz`, `.tar`, GHCR, and local Docker builds.
+
+Use another directory for GitHub installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/artemiygaer/monitoring_bot/main/install-from-github.sh \
+  | sudo MONITOR_INSTALL_DIR=/srv/monitoring-bot bash
+```
 
 ## How It Works
 - The bot runs in Docker with access to `/var/run/docker.sock`.
