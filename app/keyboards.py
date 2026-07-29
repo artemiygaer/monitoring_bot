@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from math import ceil
+
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from app.callbacks import CallbackAction, pack_callback
 
 
 MENU_OVERVIEW = "📊 Сводка"
@@ -12,7 +22,7 @@ MENU_FAILED_LOGINS = "🔐 Ошибки входа"
 MENU_CLEANUP = "🧹 Очистка"
 MENU_ABOUT = "ℹ️ О боте"
 MENU_SYSTEM = "⚙️ Система"
-MENU_REFRESH = "🔄 Обновить"
+MENU_REFRESH = "🔄 Обновить данные"
 
 ACTION_BACK = "⬅️ Назад"
 ACTION_CANCEL = "❌ Отмена"
@@ -43,12 +53,107 @@ LOG_TAIL_BUTTONS = {
     ACTION_LOG_TAIL_40: 40,
 }
 
+INLINE_PAGE_SIZE = 8
+
 
 def build_reply_menu(rows: list[list[str]], placeholder: str = "Выбери действие") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=text) for text in row] for row in rows],
         resize_keyboard=True,
         input_field_placeholder=placeholder,
+    )
+
+
+def build_paginated_inline_menu(
+    items: list[tuple[str, str]],
+    *,
+    item_action: CallbackAction | str,
+    list_action: CallbackAction | str,
+    page: int = 0,
+    page_size: int = INLINE_PAGE_SIZE,
+    back_action: CallbackAction | str = CallbackAction.BACK,
+    list_token: str = "-",
+) -> tuple[InlineKeyboardMarkup, int, int]:
+    """Строит ограниченный постраничный список контекстных кнопок."""
+
+    safe_page_size = max(page_size, 1)
+    total_pages = max(ceil(len(items) / safe_page_size), 1)
+    safe_page = min(max(page, 0), total_pages - 1)
+    start = safe_page * safe_page_size
+    page_items = items[start : start + safe_page_size]
+
+    builder = InlineKeyboardBuilder()
+    for text, token in page_items:
+        builder.row(
+            InlineKeyboardButton(
+                text=text,
+                callback_data=pack_callback(item_action, token=token, page=safe_page),
+            )
+        )
+
+    navigation: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        navigation.append(
+            InlineKeyboardButton(
+                text="◀️",
+                callback_data=pack_callback(list_action, token=list_token, page=safe_page - 1),
+            )
+        )
+    navigation.append(
+        InlineKeyboardButton(
+            text=f"{safe_page + 1}/{total_pages}",
+            callback_data=pack_callback(CallbackAction.PAGE, page=safe_page),
+        )
+    )
+    if safe_page + 1 < total_pages:
+        navigation.append(
+            InlineKeyboardButton(
+                text="▶️",
+                callback_data=pack_callback(list_action, token=list_token, page=safe_page + 1),
+            )
+        )
+    builder.row(*navigation)
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Обновить данные",
+            callback_data=pack_callback(list_action, token=list_token, page=safe_page),
+        ),
+        InlineKeyboardButton(
+            text=ACTION_BACK,
+            callback_data=pack_callback(back_action),
+        ),
+    )
+    return builder.as_markup(), safe_page, total_pages
+
+
+def build_inline_actions(
+    rows: list[list[tuple[str, CallbackAction | str, str]]],
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for row in rows:
+        builder.row(
+            *[
+                InlineKeyboardButton(
+                    text=text,
+                    callback_data=pack_callback(action, token=token),
+                )
+                for text, action, token in row
+            ]
+        )
+    return builder.as_markup()
+
+
+def build_inline_confirm(
+    *,
+    confirm_text: str,
+    token: str,
+    cancel_action: CallbackAction | str = CallbackAction.CANCEL,
+) -> InlineKeyboardMarkup:
+    return build_inline_actions(
+        [
+            [(confirm_text, CallbackAction.CONFIRM, token)],
+            [(ACTION_CANCEL, cancel_action, "-")],
+        ]
     )
 
 
@@ -59,8 +164,6 @@ def build_main_menu(include_clear_chat: bool = False) -> ReplyKeyboardMarkup:
         [MENU_COMMANDS, MENU_SYSTEM],
         [MENU_REFRESH],
     ]
-    if include_clear_chat:
-        rows.append([ACTION_CLEAR_CHAT])
     return build_reply_menu(rows)
 
 

@@ -22,11 +22,13 @@ class AccessMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         if isinstance(event, CallbackQuery):
-            await event.answer("Доступ запрещен", show_alert=True)
+            await event.answer("Доступ запрещён. Обратись к администратору.", show_alert=True)
             return None
 
         if isinstance(event, Message):
-            await event.answer("Доступ запрещен.")
+            await event.answer(
+                f"Доступ запрещён. Передай администратору свой Telegram ID: {user.id}."
+            )
             return None
 
         return None

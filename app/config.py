@@ -78,6 +78,9 @@ class Settings:
     docker_base_url: str
     docker_project_name: str | None
     excluded_services: frozenset[str]
+    docker_cache_seconds: int
+    stats_cache_seconds: int
+    io_worker_count: int
     restart_timeout_seconds: int
     default_logs_tail: int
     max_logs_tail: int
@@ -170,6 +173,14 @@ def load_settings() -> Settings:
     if not 0 < system_alert_threshold_percent <= 100:
         raise ValueError("MONITOR_SYSTEM_ALERT_THRESHOLD_PERCENT должен быть в диапазоне от 0 до 100")
 
+    docker_cache_seconds = int(os.getenv("MONITOR_DOCKER_CACHE_SECONDS", "3"))
+    stats_cache_seconds = int(os.getenv("MONITOR_STATS_CACHE_SECONDS", "10"))
+    io_worker_count = int(os.getenv("MONITOR_IO_WORKERS", "2"))
+    if docker_cache_seconds < 0 or stats_cache_seconds < 0:
+        raise ValueError("MONITOR_DOCKER_CACHE_SECONDS и MONITOR_STATS_CACHE_SECONDS не могут быть отрицательными")
+    if not 1 <= io_worker_count <= 8:
+        raise ValueError("MONITOR_IO_WORKERS должен быть в диапазоне от 1 до 8")
+
     login_log_paths = _parse_str_list(
         os.getenv("MONITOR_LOGIN_LOG_PATHS", "/hostfs/var/log/auth.log,/hostfs/var/log/secure")
     )
@@ -190,6 +201,9 @@ def load_settings() -> Settings:
         docker_base_url=os.getenv("MONITOR_DOCKER_BASE_URL", "unix:///var/run/docker.sock").strip(),
         docker_project_name=os.getenv("MONITOR_DOCKER_PROJECT", "").strip() or None,
         excluded_services=_parse_str_set(os.getenv("MONITOR_EXCLUDED_SERVICES")),
+        docker_cache_seconds=docker_cache_seconds,
+        stats_cache_seconds=stats_cache_seconds,
+        io_worker_count=io_worker_count,
         restart_timeout_seconds=restart_timeout_seconds,
         default_logs_tail=default_logs_tail,
         max_logs_tail=max_logs_tail,

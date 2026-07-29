@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import docker
 
+from app.cache import TTLCache
 from app.models import ContainerInfo, ContainerStats, ServiceInfo
 
 
@@ -16,20 +17,37 @@ class DockerMonitor:
         project_name: str | None,
         excluded_services: Iterable[str],
         timezone_name: str,
+        inventory_cache_seconds: int = 3,
+        stats_cache_seconds: int = 10,
+        client=None,
     ) -> None:
-        self.client = docker.DockerClient(base_url=base_url)
+        self.client = client or docker.DockerClient(base_url=base_url)
         self.project_name = project_name
         self.excluded_services = set(excluded_services)
         self.timezone = self._load_timezone(timezone_name)
+        self._inventory_cache: TTLCache[str, tuple[list[ServiceInfo], list[str]]] = TTLCache(
+            inventory_cache_seconds
+        )
+        self._stats_cache: TTLCache[str, ContainerStats] = TTLCache(stats_cache_seconds)
 
     def close(self) -> None:
+        self._inventory_cache.invalidate()
+        self._stats_cache.invalidate()
         self.client.close()
 
     def ping(self) -> None:
         self.client.ping()
 
     def list_services(self) -> list[ServiceInfo]:
+        services, _ = self._get_inventory()
+        return list(services)
+
+    def _get_inventory(self) -> tuple[list[ServiceInfo], list[str]]:
+        return self._inventory_cache.get_or_create("inventory", self._load_inventory)
+
+    def _load_inventory(self) -> tuple[list[ServiceInfo], list[str]]:
         services: dict[tuple[str | None, str], ServiceInfo] = {}
+        project_names: set[str] = set()
 
         for container in self.client.api.containers(all=True, filters=self._container_filters()):
             labels = container.get("Labels") or {}
@@ -40,6 +58,8 @@ class DockerMonitor:
                 continue
 
             project_name = labels.get("com.docker.compose.project")
+            if project_name:
+                project_names.add(project_name)
             service_key = (project_name, service_name)
             service = services.setdefault(
                 service_key,
@@ -50,18 +70,11 @@ class DockerMonitor:
         result = sorted(services.values(), key=lambda item: ((item.project_name or ""), item.name))
         for service in result:
             service.containers.sort(key=lambda item: item.name)
-        return result
+        return result, sorted(project_names)
 
     def list_project_names(self) -> list[str]:
-        project_names: set[str] = set()
-
-        for container in self.client.api.containers(all=True, filters={"label": ["com.docker.compose.project"]}):
-            labels = container.get("Labels") or {}
-            project_name = labels.get("com.docker.compose.project")
-            if project_name:
-                project_names.add(project_name)
-
-        return sorted(project_names)
+        _, project_names = self._get_inventory()
+        return list(project_names)
 
     def get_service(self, service_name: str) -> ServiceInfo:
         normalized_query = service_name.strip().lower()
@@ -81,7 +94,7 @@ class DockerMonitor:
         if len(matches) > 1:
             raise LookupError(
                 f"Сервис '{service_name}' найден в нескольких проектах. "
-                "Укажи MONITOR_DOCKER_PROJECT, чтобы сузить выбор."
+                "Ограничь мониторинг одним Compose-проектом в настройках."
             )
 
         return matches[0]
@@ -112,8 +125,11 @@ class DockerMonitor:
 
         for service in services:
             for container_info in service.containers:
-                container = self.client.containers.get(container_info.id)
-                raw_logs = container.logs(tail=effective_tail, timestamps=True)
+                raw_logs = self.client.api.logs(
+                    container_info.id,
+                    tail=effective_tail,
+                    timestamps=True,
+                )
                 logs_text = raw_logs.decode("utf-8", errors="replace").strip() or "Логи пусты."
                 title_parts = [service.project_name, service.name, container_info.name]
                 title = "/".join(part for part in title_parts if part)
@@ -122,9 +138,8 @@ class DockerMonitor:
         return "\n\n".join(sections).strip() or "Подходящие сервисы не найдены."
 
     def get_container_logs(self, container_id: str, tail: int) -> tuple[ContainerInfo, str]:
-        container = self.client.containers.get(container_id)
-        container_info = self._to_container_info(container)
-        raw_logs = container.logs(tail=tail, timestamps=True)
+        container_info = self.get_container(container_id)
+        raw_logs = self.client.api.logs(container_id, tail=tail, timestamps=True)
         logs_text = raw_logs.decode("utf-8", errors="replace").strip() or "Логи пусты."
         return container_info, logs_text
 
@@ -132,8 +147,7 @@ class DockerMonitor:
         sections: list[str] = []
 
         for container_info in service.containers:
-            container = self.client.containers.get(container_info.id)
-            raw_logs = container.logs(tail=tail, timestamps=True)
+            raw_logs = self.client.api.logs(container_info.id, tail=tail, timestamps=True)
             logs_text = raw_logs.decode("utf-8", errors="replace").strip() or "Логи пусты."
 
             if len(service.containers) == 1:
@@ -150,9 +164,7 @@ class DockerMonitor:
 
         for service in services:
             for container_info in service.containers:
-                container = self.client.containers.get(container_info.id)
-                raw_stats = container.stats(stream=False)
-                stats.append(self._build_container_stats(service.name, container_info.name, raw_stats))
+                stats.append(self._get_cached_stats(service.name, container_info))
 
         return sorted(stats, key=lambda item: (item.service_name, item.container_name))
 
@@ -161,17 +173,23 @@ class DockerMonitor:
         stats: list[ContainerStats] = []
 
         for container_info in service.containers:
-            container = self.client.containers.get(container_info.id)
-            raw_stats = container.stats(stream=False)
-            stats.append(self._build_container_stats(service.name, container_info.name, raw_stats))
+            stats.append(self._get_cached_stats(service.name, container_info))
 
         return sorted(stats, key=lambda item: (item.service_name, item.container_name))
 
     def get_container_stats(self, container_id: str) -> ContainerStats:
-        container = self.client.containers.get(container_id)
-        container_info = self._to_container_info(container)
-        raw_stats = container.stats(stream=False)
-        return self._build_container_stats(container_info.service_name, container_info.name, raw_stats)
+        container_info = self.get_container(container_id)
+        return self._get_cached_stats(container_info.service_name, container_info)
+
+    def _get_cached_stats(self, service_name: str, container_info: ContainerInfo) -> ContainerStats:
+        return self._stats_cache.get_or_create(
+            container_info.id,
+            lambda: self._build_container_stats(
+                service_name,
+                container_info.name,
+                self.client.api.stats(container_info.id, stream=False),
+            ),
+        )
 
     def list_containers(self) -> list[ContainerInfo]:
         containers: list[ContainerInfo] = []
@@ -180,14 +198,13 @@ class DockerMonitor:
         return sorted(containers, key=lambda item: ((item.project_name or ""), item.service_name, item.name))
 
     def get_container(self, container_id: str) -> ContainerInfo:
-        container = self.client.containers.get(container_id)
-        return self._to_container_info(container)
+        return self._inspect_to_container_info(self.client.api.inspect_container(container_id))
 
     def restart_container(self, container_id: str, timeout_seconds: int) -> ContainerInfo:
-        container = self.client.containers.get(container_id)
-        container.restart(timeout=timeout_seconds)
-        container.reload()
-        return self._to_container_info(container)
+        self.client.api.restart(container_id, timeout=timeout_seconds)
+        self._inventory_cache.invalidate()
+        self._stats_cache.invalidate(container_id)
+        return self.get_container(container_id)
 
     def _container_filters(self) -> dict[str, list[str]]:
         if self.project_name:
@@ -211,26 +228,21 @@ class DockerMonitor:
             started_at=None,
         )
 
-    def _to_container_info(self, container: docker.models.containers.Container) -> ContainerInfo:
-        labels = container.labels or {}
-        state = container.attrs.get("State", {})
+    def _inspect_to_container_info(self, container: dict) -> ContainerInfo:
+        config = container.get("Config") or {}
+        labels = config.get("Labels") or {}
+        state = container.get("State") or {}
         health = (state.get("Health") or {}).get("Status")
-
-        image_tags = container.image.tags if container.image else []
-        if image_tags:
-            image = image_tags[0]
-        elif container.image:
-            image = container.image.short_id
-        else:
-            image = "unknown"
+        name = str(container.get("Name") or container.get("Id") or "unknown").lstrip("/")
+        image = config.get("Image") or container.get("Image") or "unknown"
 
         return ContainerInfo(
-            id=container.id,
-            name=container.name,
-            service_name=labels.get("com.docker.compose.service", container.name),
+            id=container.get("Id", ""),
+            name=name,
+            service_name=labels.get("com.docker.compose.service", name),
             project_name=labels.get("com.docker.compose.project"),
             image=image,
-            status=state.get("Status", container.status),
+            status=state.get("Status", "unknown"),
             health=health,
             started_at=self._parse_started_at(state.get("StartedAt")),
         )

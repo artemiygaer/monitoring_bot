@@ -4,8 +4,14 @@ import unittest
 from datetime import datetime, timezone
 
 from app.formatters import (
+    TELEGRAM_MESSAGE_LIMIT,
+    format_bytes,
     format_container_details,
+    format_cpu_usage,
+    format_memory_usage,
     format_overview,
+    format_percent,
+    format_preformatted_message,
     format_resources,
     format_service_details,
     format_stats,
@@ -15,6 +21,14 @@ from app.models import ContainerInfo, ContainerStats, DiskUsage, ServiceInfo, Sy
 
 
 class FormatterTests(unittest.TestCase):
+    def test_format_overview_explains_empty_state(self) -> None:
+        rendered = format_overview([], "missing-project", ["project-a"])
+
+        self.assertIn("Сервисы не найдены", rendered)
+        self.assertIn("Возможная причина", rendered)
+        self.assertIn("project-a", rendered)
+        self.assertIn("Обновить данные", rendered)
+
     def test_format_overview_contains_summary(self) -> None:
         service = ServiceInfo(
             name="xray",
@@ -64,6 +78,7 @@ class FormatterTests(unittest.TestCase):
 
         rendered = format_overview([service], "monitoring", system_snapshot=system_snapshot)
 
+        self.assertTrue(rendered.startswith("🖥️ <b>debian-host</b>\n<b>Состояние:</b>"))
         self.assertIn("Сводка по Docker Compose", rendered)
         self.assertIn("xray", rendered)
         self.assertIn("Статусы:", rendered)
@@ -114,9 +129,15 @@ class FormatterTests(unittest.TestCase):
 
         rendered = format_stats(stats, service_name="hysteria")
 
-        self.assertIn("3.14%", rendered)
+        self.assertIn("3.1%", rendered)
         self.assertIn("10.00 MiB", rendered)
         self.assertIn("5.00 KiB", rendered)
+
+    def test_format_stats_explains_missing_data(self) -> None:
+        rendered = format_stats([], title="Статистика")
+
+        self.assertIn("Данные недоступны", rendered)
+        self.assertIn("Обновить данные", rendered)
 
     def test_format_resources_contains_host_and_top_containers(self) -> None:
         snapshot = SystemSnapshot(
@@ -226,6 +247,52 @@ class FormatterTests(unittest.TestCase):
         self.assertIn("91.2%", rendered)
         self.assertIn("10.00 GiB", rendered)
         self.assertIn("150.00 GiB", rendered)
+
+    def test_resource_helpers_use_consistent_precision_and_units(self) -> None:
+        self.assertEqual("12.3%", format_percent(12.34))
+        self.assertEqual("🟢 12.3%", format_cpu_usage(12.34))
+        self.assertEqual(
+            "1.00 MiB / 2.00 MiB (50.0%)",
+            format_memory_usage(1024 * 1024, 2 * 1024 * 1024, 50),
+        )
+        self.assertEqual("1.00 MiB", format_bytes(1024 * 1024))
+
+    def test_adversarial_overview_stays_within_telegram_limit(self) -> None:
+        services = []
+        for index in range(100):
+            unsafe_name = f"service-{index}-<&>" + "я" * 200
+            services.append(
+                ServiceInfo(
+                    name=unsafe_name,
+                    project_name="project-<&>",
+                    containers=[
+                        ContainerInfo(
+                            id=str(index),
+                            name=unsafe_name,
+                            service_name=unsafe_name,
+                            project_name="project-<&>",
+                            image="image:<tag>" + "x" * 200,
+                            status="running",
+                            health="healthy",
+                            started_at=None,
+                        )
+                    ],
+                )
+            )
+
+        rendered = format_overview(services, None)
+
+        self.assertLessEqual(len(rendered), TELEGRAM_MESSAGE_LIMIT)
+        self.assertNotIn("<&>", rendered)
+        self.assertIn("сообщение сокращено", rendered)
+
+    def test_long_preformatted_output_is_escaped_and_bounded(self) -> None:
+        rendered = format_preformatted_message("Вывод <команды>", "<&>" * 5000)
+
+        self.assertLessEqual(len(rendered), TELEGRAM_MESSAGE_LIMIT)
+        self.assertTrue(rendered.endswith("</pre>"))
+        self.assertIn("&lt;", rendered)
+        self.assertNotIn("`", rendered)
 
 
 if __name__ == "__main__":

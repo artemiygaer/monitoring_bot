@@ -4,6 +4,9 @@ services:
     pull_policy: never
     container_name: monitoring-bot
     restart: unless-stopped
+    mem_limit: ${MONITOR_CONTAINER_MEMORY_LIMIT:-192m}
+    cpus: ${MONITOR_CONTAINER_CPU_LIMIT:-0.5}
+    pids_limit: ${MONITOR_CONTAINER_PIDS_LIMIT:-64}
     env_file:
       - .env
     volumes:

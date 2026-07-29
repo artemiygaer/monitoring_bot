@@ -154,7 +154,7 @@ class DockerAlertWatcher:
             await asyncio.sleep(self.login_poll_interval_seconds)
 
     async def _poll_docker(self) -> None:
-        current_services = self.monitor.list_services()
+        current_services = await asyncio.to_thread(self.monitor.list_services)
         current_snapshot = build_container_snapshot(current_services)
 
         if self.docker_error_active:
@@ -174,7 +174,7 @@ class DockerAlertWatcher:
         self.previous_snapshot = current_snapshot
 
     async def _poll_system(self) -> None:
-        snapshot = self.system_monitor.get_snapshot()
+        snapshot = await asyncio.to_thread(self.system_monitor.get_snapshot)
         if snapshot is None:
             if not self.system_error_active:
                 await self.broadcast_text(self._format_system_error_message())

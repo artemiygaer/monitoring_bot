@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
@@ -19,6 +20,11 @@ from app.system_monitor import SystemMonitor
 
 async def main() -> None:
     settings = load_settings()
+    io_executor = ThreadPoolExecutor(
+        max_workers=settings.io_worker_count,
+        thread_name_prefix="monitoring-io",
+    )
+    asyncio.get_running_loop().set_default_executor(io_executor)
 
     logging.basicConfig(
         level=getattr(logging, settings.log_level, logging.INFO),
@@ -30,8 +36,10 @@ async def main() -> None:
         project_name=settings.docker_project_name,
         excluded_services=settings.excluded_services,
         timezone_name=settings.timezone_name,
+        inventory_cache_seconds=settings.docker_cache_seconds,
+        stats_cache_seconds=settings.stats_cache_seconds,
     )
-    monitor.ping()
+    await asyncio.to_thread(monitor.ping)
 
     system_monitor = SystemMonitor(
         proc_path=settings.system_proc_path,
@@ -64,7 +72,7 @@ async def main() -> None:
     )
     dispatcher = Dispatcher()
     dispatcher.include_router(create_router(monitor, system_monitor, login_monitor, command_executor, settings))
-    
+
     alert_tasks: list[asyncio.Task[None]] = []
 
     try:
@@ -90,10 +98,11 @@ async def main() -> None:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-        
+
         monitor.close()
         command_executor.close()
         await bot.session.close()
+        io_executor.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == "__main__":

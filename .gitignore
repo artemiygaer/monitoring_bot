@@ -13,6 +13,7 @@ server_bundle_debian/SHA256SUMS.txt
 
 tmp*/
 .tmp/
+.supergoal/
 
 .vscode/
 .idea/

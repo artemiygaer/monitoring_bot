@@ -37,7 +37,9 @@ jobs:
         run: |
           mkdir -p artifacts
           docker save monitoring-bot:debian-amd64 | gzip > artifacts/monitoring-bot-debian-amd64.tar.gz
-          sha256sum artifacts/monitoring-bot-debian-amd64.tar.gz > artifacts/SHA256SUMS.txt
+          cp install.sh deploy.sh docker-compose.bot.yml .env.example artifacts/
+          cd artifacts
+          sha256sum monitoring-bot-debian-amd64.tar.gz > SHA256SUMS.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -45,6 +47,10 @@ jobs:
           files: |
             artifacts/monitoring-bot-debian-amd64.tar.gz
             artifacts/SHA256SUMS.txt
+            artifacts/install.sh
+            artifacts/deploy.sh
+            artifacts/docker-compose.bot.yml
+            artifacts/.env.example
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-') }}

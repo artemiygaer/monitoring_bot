@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.keyboards import (
+    ACTION_CANCEL,
     ACTION_CONFIRM_BACKUP,
     ACTION_CONFIRM_CLEANUP,
     ACTION_CONFIRM_DELETE_BACKUP,
@@ -29,9 +30,11 @@ from app.keyboards import (
     build_cleanup_confirm_menu,
     build_container_detail_menu,
     build_main_menu,
+    build_paginated_inline_menu,
     build_service_detail_menu,
     build_system_menu,
 )
+from app.callbacks import BotCallback, CallbackAction
 
 
 def keyboard_texts(markup) -> list[str]:
@@ -70,6 +73,70 @@ class KeyboardTests(unittest.TestCase):
         self.assertNotIn("Логи", texts)
         self.assertNotIn("Статистика", texts)
 
+    def test_main_menu_never_contains_dynamic_cleanup_action(self) -> None:
+        texts = keyboard_texts(build_main_menu(include_clear_chat=True))
+
+        self.assertNotIn("🧹 Очистить чат", texts)
+
+    def test_paginated_inline_menu_has_fixed_page_size(self) -> None:
+        items = [(f"Сервис {index}", f"token-{index}") for index in range(20)]
+
+        markup, page, total_pages = build_paginated_inline_menu(
+            items,
+            item_action=CallbackAction.SERVICE_OPEN,
+            list_action=CallbackAction.SERVICE_LIST,
+            page=1,
+        )
+        callbacks = [
+            BotCallback.unpack(button.callback_data)
+            for row in markup.inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        item_callbacks = [
+            callback
+            for callback in callbacks
+            if callback.action == CallbackAction.SERVICE_OPEN.value
+        ]
+
+        self.assertEqual(1, page)
+        self.assertEqual(3, total_pages)
+        self.assertEqual(8, len(item_callbacks))
+
+    def test_paginated_inline_menu_normalizes_last_page(self) -> None:
+        items = [(f"Сервис {index}", f"token-{index}") for index in range(3)]
+
+        _, page, total_pages = build_paginated_inline_menu(
+            items,
+            item_action=CallbackAction.SERVICE_OPEN,
+            list_action=CallbackAction.SERVICE_LIST,
+            page=99,
+        )
+
+        self.assertEqual(0, page)
+        self.assertEqual(1, total_pages)
+
+    def test_paginated_inline_menu_preserves_list_filter_token(self) -> None:
+        items = [(f"Контейнер {index}", f"item-{index}") for index in range(10)]
+
+        markup, _, _ = build_paginated_inline_menu(
+            items,
+            item_action=CallbackAction.CONTAINER_OPEN,
+            list_action=CallbackAction.CONTAINER_LIST,
+            list_token="service-token",
+        )
+        list_callbacks = [
+            BotCallback.unpack(button.callback_data)
+            for row in markup.inline_keyboard
+            for button in row
+            if button.callback_data
+            and BotCallback.unpack(button.callback_data).action
+            == CallbackAction.CONTAINER_LIST.value
+        ]
+
+        self.assertTrue(list_callbacks)
+        self.assertTrue(all(item.token == "service-token" for item in list_callbacks))
+
     def test_system_menu_contains_secondary_actions(self) -> None:
         markup = build_system_menu()
         texts = keyboard_texts(markup)
@@ -83,6 +150,7 @@ class KeyboardTests(unittest.TestCase):
         texts = keyboard_texts(markup)
 
         self.assertIn(ACTION_CONFIRM_BACKUP, texts)
+        self.assertIn(ACTION_CANCEL, texts)
 
     def test_backup_menu_contains_archive_actions(self) -> None:
         markup = build_backup_menu()
@@ -104,12 +172,14 @@ class KeyboardTests(unittest.TestCase):
         texts = keyboard_texts(markup)
 
         self.assertIn(ACTION_CONFIRM_DELETE_BACKUP, texts)
+        self.assertIn(ACTION_CANCEL, texts)
 
     def test_cleanup_confirm_menu_contains_confirm_action(self) -> None:
         markup = build_cleanup_confirm_menu()
         texts = keyboard_texts(markup)
 
         self.assertIn(ACTION_CONFIRM_CLEANUP, texts)
+        self.assertIn(ACTION_CANCEL, texts)
 
 
 if __name__ == "__main__":

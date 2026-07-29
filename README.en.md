@@ -16,11 +16,11 @@ Decentralized Telegram bot for monitoring Debian servers. Each server runs indep
 - 📈 **Resources**: Host CPU/RAM/Disk and top containers by CPU/RAM in a single screen.
 - 🐳 **Containers**: Container management (status, logs, statistics, restart).
 - ⌨️ **Commands**: Execute any shell command on the host with confirmation.
-- 🗄️ **Backup**: Create, download (up to 200 MB) and delete `/root` tar archives.
+- 🗄️ **Backup**: Create, download (up to 50 MiB) and delete `/root` tar archives.
 - ⚙️ **System**: Submenu for secondary functions (Cleanup, Login Errors, About).
 - ℹ️ **About**: Version, build date, active settings, PID, Python, RSS/VmSize of the process and active session count.
 - 🛡️ **Security**: Login notifications (SSH/tty) and authentication errors.
-- 🚀 **Deploy**: Image-based delivery via `.tar` (no build on target server).
+- 🚀 **Deploy**: Prebuilt image from GHCR, `.tar.gz`, or `.tar`; local build is a fallback.
 
 ## Bottom Menu
 
@@ -29,7 +29,7 @@ The main menu keeps only frequent actions:
 - `Summary` and `Resources` — quick state checks.
 - `Containers` and `Backup` — main operations.
 - `Commands` and `System` — administrative actions.
-- `Refresh` — repeat the current screen.
+- `Refresh data` — repeat the current screen.
 
 Rare actions are moved to `System` so the bottom keyboard is not overloaded.
 
@@ -50,22 +50,28 @@ Rare actions are moved to `System` so the bottom keyboard is not overloaded.
 | `MONITOR_TIMEZONE` | Timezone (e.g., `Europe/Moscow`). |
 | `MONITOR_BACKUP_SOURCE_DIR` | What to back up (default `/root`). |
 | `MONITOR_BACKUP_TARGET_DIR` | Where to store backups (default `/backup`). |
+| `MONITOR_DOCKER_CACHE_SECONDS` | Container inventory TTL, 3 seconds by default. |
+| `MONITOR_STATS_CACHE_SECONDS` | Container statistics TTL, 10 seconds by default. |
+| `MONITOR_IO_WORKERS` | Blocking I/O worker count, 2 by default. |
+| `MONITOR_CONTAINER_MEMORY_LIMIT` | Container memory limit, `192m` by default. |
+| `MONITOR_CONTAINER_CPU_LIMIT` | Container CPU limit, `0.5` by default. |
+| `MONITOR_CONTAINER_PIDS_LIMIT` | Container process limit, 64 by default. |
 
 ## Quick Start (Deployment)
 
 ### Option A: via GitHub Release (no build on the server)
 
-1. **Prepare**: Get a token from @BotFather.
-2. **Transfer archive**: Download `monitoring-bot-debian-amd64.tar.gz` and `SHA256SUMS.txt` from the [GitHub Release](https://github.com/artemiygaer/monitoring_bot/releases/latest).
-3. **Configure**: Create `.env` from `.env.example` (set token and server name).
-4. **Run**:
+Docker Engine and the Compose plugin must already be installed on Debian. The installer does not change APT sources or install Docker.
+
 ```bash
 mkdir -p /opt/monitoring-bot && cd /opt/monitoring-bot
-curl -L -o monitoring-bot-debian-amd64.tar.gz https://github.com/artemiygaer/monitoring_bot/releases/latest/download/monitoring-bot-debian-amd64.tar.gz
-curl -L -o SHA256SUMS.txt https://github.com/artemiygaer/monitoring_bot/releases/latest/download/SHA256SUMS.txt
-curl -L -o docker-compose.bot.yml https://raw.githubusercontent.com/artemiygaer/monitoring_bot/main/docker-compose.bot.yml
+base_url="https://github.com/artemiygaer/monitoring_bot/releases/latest/download"
+for file in monitoring-bot-debian-amd64.tar.gz SHA256SUMS.txt install.sh deploy.sh docker-compose.bot.yml; do
+  curl -fL -O "$base_url/$file"
+done
+chmod +x install.sh deploy.sh
 sha256sum -c SHA256SUMS.txt
-bash deploy.sh
+bash install.sh
 ```
 
 ### Option B: via git clone (image is pulled from ghcr.io)
@@ -73,12 +79,30 @@ bash deploy.sh
 ```bash
 git clone https://github.com/artemiygaer/monitoring_bot.git /opt/monitoring-bot
 cd /opt/monitoring-bot
-cp .env.example .env
-nano .env   # set BOT_TOKEN, ALLOWED_USER_IDS, MONITOR_SERVER_NAME
-bash deploy.sh
+bash install.sh
 ```
 
-`deploy.sh` auto-detects the source: if `monitoring-bot-debian-amd64.tar` is present, it loads it; otherwise it pulls `ghcr.io/artemiygaer/monitoring_bot:latest`.
+`install.sh` securely prompts for the token, validates numeric Telegram IDs, server name, timezone, and image source. An existing `.env` is copied to `.env.backup-YYYYMMDD-HHMMSS`; unknown keys are preserved and known keys are replaced without duplicates. The resulting `.env` has mode `600`.
+
+Configure without deploying:
+
+```bash
+bash install.sh --config-only
+```
+
+For automation, use `--non-interactive`. Pass the token through the environment, never as a process argument:
+
+```bash
+read -rsp "Telegram token: " MONITOR_INSTALL_BOT_TOKEN && echo
+export MONITOR_INSTALL_BOT_TOKEN
+MONITOR_INSTALL_ALLOWED_USER_IDS=123456789 \
+MONITOR_INSTALL_SERVER_NAME=server-01 \
+MONITOR_INSTALL_TIMEZONE=Europe/Moscow \
+bash install.sh --non-interactive
+unset MONITOR_INSTALL_BOT_TOKEN
+```
+
+Supported sources are `auto` (default), `ghcr`, `archive`, and `build`; set `MONITOR_INSTALL_SOURCE` in non-interactive mode. `deploy.sh` supports `monitoring-bot-debian-amd64.tar.gz`, `.tar`, GHCR, and local Docker builds.
 
 ## How It Works
 - The bot runs in Docker with access to `/var/run/docker.sock`.
@@ -87,7 +111,8 @@ bash deploy.sh
 
 ## Security
 - Access is strictly by `ALLOWED_USER_IDS`.
+- `.env` is written atomically with mode `600`; the installer never prints the token.
 - All critical actions (restart, commands, backup deletion) require confirmation.
-- The bot is optimized for weak servers (RAM limit ~100 MB).
+- The bot is optimized for weak servers: Docker requests are cached, blocking I/O uses two bounded workers, and the default memory limit is 192 MB.
 
 See also: [Russian version](README.md), [English Security Policy](SECURITY.en.md).

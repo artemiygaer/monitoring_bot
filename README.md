@@ -16,11 +16,11 @@
 - 📈 **Ресурсы**: Хостовые CPU/RAM/Disk и топ контейнеров по CPU/RAM в одном экране.
 - 🐳 **Контейнеры**: Управление контейнерами (статус, логи, статистика, перезапуск).
 - ⌨️ **Команды**: Выполнение любых Shell-команд на хосте с подтверждением.
-- 🗄️ **Бекап**: Создание, скачивание (до 200МБ) и удаление tar-архивов `/root`.
+- 🗄️ **Бекап**: Создание, скачивание (до 50 МиБ) и удаление tar-архивов `/root`.
 - ⚙️ **Система**: Подменю для второстепенных функций (Очистка, Ошибки входа, О боте).
 - ℹ️ **О боте**: Версия, дата сборки, активные настройки, PID, Python, RSS/VmSize процесса и число активных сессий.
 - 🛡️ **Безопасность**: Уведомления о входах (SSH/tty) и ошибки авторизации.
-- 🚀 **Деплой**: Image-based доставка через `.tar` (никакой сборки на целевом сервере).
+- 🚀 **Деплой**: Готовый образ из GHCR, `.tar.gz` или `.tar`; локальная сборка — резервный вариант.
 
 ## Нижнее меню
 
@@ -29,7 +29,7 @@
 - `Сводка` и `Ресурсы` — быстрый контроль состояния.
 - `Контейнеры` и `Бекап` — основные операции.
 - `Команды` и `Система` — административные действия.
-- `Обновить` — повтор текущего экрана.
+- `Обновить данные` — повтор текущего экрана.
 
 Редкие действия вынесены в `Система`, чтобы нижняя клавиатура не была перегружена.
 
@@ -50,22 +50,28 @@
 | `MONITOR_TIMEZONE` | Таймзона (например, `Europe/Moscow`). |
 | `MONITOR_BACKUP_SOURCE_DIR` | Что бэкапить (по умолчанию `/root`). |
 | `MONITOR_BACKUP_TARGET_DIR` | Куда сохранять бэкапы (по умолчанию `/backup`). |
+| `MONITOR_DOCKER_CACHE_SECONDS` | TTL списка контейнеров, по умолчанию 3 секунды. |
+| `MONITOR_STATS_CACHE_SECONDS` | TTL статистики контейнеров, по умолчанию 10 секунд. |
+| `MONITOR_IO_WORKERS` | Число потоков для блокирующего I/O, по умолчанию 2. |
+| `MONITOR_CONTAINER_MEMORY_LIMIT` | Лимит памяти контейнера, по умолчанию `192m`. |
+| `MONITOR_CONTAINER_CPU_LIMIT` | Лимит CPU контейнера, по умолчанию `0.5`. |
+| `MONITOR_CONTAINER_PIDS_LIMIT` | Лимит процессов контейнера, по умолчанию 64. |
 
-## Быстрый старт (Развертывание)
+## Быстрый старт (развёртывание)
 
 ### Вариант A: через GitHub Release (без сборки на сервере)
 
-1. **Подготовка**: Получите токен у @BotFather.
-2. **Перенос архива**: Скачайте `monitoring-bot-debian-amd64.tar.gz` и `SHA256SUMS.txt` из [GitHub Release](https://github.com/artemiygaer/monitoring_bot/releases/latest).
-3. **Настройка**: Создайте `.env` из `.env.example` (укажите токен и имя сервера).
-4. **Запуск**:
+На Debian заранее должны быть установлены Docker Engine и Compose plugin. Установщик не меняет APT-репозитории и не устанавливает Docker.
+
 ```bash
 mkdir -p /opt/monitoring-bot && cd /opt/monitoring-bot
-curl -L -o monitoring-bot-debian-amd64.tar.gz https://github.com/artemiygaer/monitoring_bot/releases/latest/download/monitoring-bot-debian-amd64.tar.gz
-curl -L -o SHA256SUMS.txt https://github.com/artemiygaer/monitoring_bot/releases/latest/download/SHA256SUMS.txt
-curl -L -o docker-compose.bot.yml https://raw.githubusercontent.com/artemiygaer/monitoring_bot/main/docker-compose.bot.yml
+base_url="https://github.com/artemiygaer/monitoring_bot/releases/latest/download"
+for file in monitoring-bot-debian-amd64.tar.gz SHA256SUMS.txt install.sh deploy.sh docker-compose.bot.yml; do
+  curl -fL -O "$base_url/$file"
+done
+chmod +x install.sh deploy.sh
 sha256sum -c SHA256SUMS.txt
-bash deploy.sh
+bash install.sh
 ```
 
 ### Вариант B: через git clone (образ подтянется из ghcr.io)
@@ -73,12 +79,30 @@ bash deploy.sh
 ```bash
 git clone https://github.com/artemiygaer/monitoring_bot.git /opt/monitoring-bot
 cd /opt/monitoring-bot
-cp .env.example .env
-nano .env   # укажите BOT_TOKEN, ALLOWED_USER_IDS, MONITOR_SERVER_NAME
-bash deploy.sh
+bash install.sh
 ```
 
-`deploy.sh` сам определит способ: если рядом есть `monitoring-bot-debian-amd64.tar` — загрузит его, иначе попробует `docker pull ghcr.io/artemiygaer/monitoring_bot:latest`.
+`install.sh` скрыто запросит токен, проверит числовые Telegram ID, имя сервера, часовой пояс и источник образа. Существующий `.env` копируется в `.env.backup-YYYYMMDD-HHMMSS`; неизвестные ключи сохраняются, известные обновляются без дублей. Итоговый `.env` получает права `600`.
+
+Только подготовить конфигурацию:
+
+```bash
+bash install.sh --config-only
+```
+
+Для автоматизации доступен `--non-interactive`. Токен передаётся через окружение, но не через аргумент процесса:
+
+```bash
+read -rsp "Telegram token: " MONITOR_INSTALL_BOT_TOKEN && echo
+export MONITOR_INSTALL_BOT_TOKEN
+MONITOR_INSTALL_ALLOWED_USER_IDS=123456789 \
+MONITOR_INSTALL_SERVER_NAME=server-01 \
+MONITOR_INSTALL_TIMEZONE=Europe/Moscow \
+bash install.sh --non-interactive
+unset MONITOR_INSTALL_BOT_TOKEN
+```
+
+Источники: `auto` (по умолчанию), `ghcr`, `archive` или `build`; для non-interactive режима используется `MONITOR_INSTALL_SOURCE`. `deploy.sh` поддерживает `monitoring-bot-debian-amd64.tar.gz`, `.tar`, GHCR и локальную сборку.
 
 ## Как это работает
 - Бот запускается в Docker с доступом к `/var/run/docker.sock`.
@@ -87,7 +111,8 @@ bash deploy.sh
 
 ## Безопасность
 - Доступ строго по `ALLOWED_USER_IDS`.
+- `.env` создаётся атомарно с правами `600`; токен установщик не выводит.
 - Все критические действия (перезапуск, команды, удаление бэкапов) требуют подтверждения.
-- Бот оптимизирован для работы на слабых серверах (лимит ОЗУ ~100МБ).
+- Бот оптимизирован для слабых серверов: Docker-запросы кешируются, блокирующий I/O ограничен двумя потоками, лимит памяти по умолчанию — 192 МБ.
 
 [English version](README.en.md)

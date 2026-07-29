@@ -1,10 +1,67 @@
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime
 
-from app.models import ContainerInfo
-from app.models import ContainerStats, DiskUsage, ServiceInfo, SystemSnapshot
+from app.models import ContainerInfo, ContainerStats, DiskUsage, ServiceInfo, SystemSnapshot
+
+
+TELEGRAM_MESSAGE_LIMIT = 4096
+TRUNCATION_NOTICE = "\n\n… сообщение сокращено. Открой объект отдельно."
+
+
+def format_percent(value: float) -> str:
+    """Форматирует процент единообразно для всех экранов."""
+
+    return f"{max(value, 0.0):.1f}%"
+
+
+def format_cpu_usage(value: float) -> str:
+    return f"{usage_emoji(value)} {format_percent(value)}"
+
+
+def format_memory_usage(used: int, total: int, percent: float) -> str:
+    return f"{format_bytes(used)} / {format_bytes(total)} ({format_percent(percent)})"
+
+
+def limit_html_message(value: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> str:
+    """Ограничивает HTML-сообщение, не оставляя повреждённую разметку."""
+
+    if len(value) <= limit:
+        return value
+    plain_text = html.unescape(re.sub(r"<[^>]+>", "", value))
+    budget = max(limit - len(TRUNCATION_NOTICE), 0)
+    return _escape_to_budget(plain_text, budget) + TRUNCATION_NOTICE
+
+
+def format_preformatted_message(
+    title: str,
+    content: str,
+    *,
+    limit: int = TELEGRAM_MESSAGE_LIMIT,
+) -> str:
+    """Безопасно помещает произвольный вывод в HTML-блок Telegram."""
+
+    prefix = f"<b>{html.escape(title)}</b>\n\n<pre>"
+    suffix = "</pre>"
+    notice = "\n… вывод сокращён"
+    available = max(limit - len(prefix) - len(suffix), 0)
+    escaped = html.escape(content)
+    if len(escaped) > available:
+        escaped = _escape_to_budget(content, max(available - len(notice), 0)) + notice
+    return f"{prefix}{escaped}{suffix}"
+
+
+def _escape_to_budget(value: str, budget: int) -> str:
+    low, high = 0, len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(html.escape(value[:middle])) <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    return html.escape(value[:low])
 
 
 def service_level(service: ServiceInfo) -> str:
@@ -44,8 +101,29 @@ def format_overview(
     warn_count = sum(1 for service in services if service_level(service) == "WARN")
     down_count = sum(1 for service in services if service_level(service) == "DOWN")
     total_containers = sum(service.total_count for service in services)
+    hostname = system_snapshot.hostname if system_snapshot is not None else "сервер не определён"
+    resource_percentages = []
+    if system_snapshot is not None:
+        resource_percentages = [
+            system_snapshot.cpu_percent,
+            system_snapshot.memory_used_percent,
+        ]
+        if system_snapshot.disk_usage is not None:
+            resource_percentages.append(system_snapshot.disk_usage.used_percent)
+    peak_resource = max(resource_percentages, default=0.0)
+    if not services:
+        overall_state = "⚪ нет данных о сервисах"
+    elif down_count or peak_resource >= 90:
+        overall_state = "🔴 есть критичная проблема"
+    elif warn_count or peak_resource >= 70:
+        overall_state = "🟡 требуется внимание"
+    else:
+        overall_state = "🟢 всё работает"
 
     lines = [
+        f"🖥️ <b>{html.escape(hostname)}</b>",
+        f"<b>Состояние:</b> {overall_state}",
+        "",
         "<b>Сводка по Docker Compose</b>",
         f"<b>Проект:</b> {html.escape(project_name or 'все compose-проекты')}",
         f"<b>Сервисов:</b> {len(services)}",
@@ -61,14 +139,15 @@ def format_overview(
         lines.append("")
 
     if not services:
-        lines.append("Подходящие сервисы не найдены.")
+        lines.append("Сервисы не найдены.")
+        lines.append("Проверь доступ к Docker и настройку проекта, затем нажми «Обновить данные».")
         if project_name and available_project_names:
             lines.append("")
             lines.append(
                 f"<b>Возможная причина:</b> проект <code>{html.escape(project_name)}</code> не найден в Docker."
             )
             lines.append(f"<b>Доступные compose-проекты:</b> {html.escape(', '.join(available_project_names))}")
-        return "\n".join(lines)
+        return limit_html_message("\n".join(lines))
 
     sorted_services = sorted(
         services,
@@ -84,7 +163,7 @@ def format_overview(
     lines.append("<b>Все сервисы</b>")
     for service in sorted_services:
         lines.append(format_service_card(service, show_project=project_name is None))
-    return "\n".join(lines)
+    return limit_html_message("\n".join(lines))
 
 
 def format_service_details(service: ServiceInfo) -> str:
@@ -108,7 +187,7 @@ def format_service_details(service: ServiceInfo) -> str:
             ]
         )
 
-    return "\n".join(sections).strip()
+    return limit_html_message("\n".join(sections).strip())
 
 
 def format_container_details(container: ContainerInfo) -> str:
@@ -116,7 +195,7 @@ def format_container_details(container: ContainerInfo) -> str:
     if container.project_name:
         title = f"{container.project_name}/{container.service_name}/{container.name}"
 
-    return "\n".join(
+    return limit_html_message("\n".join(
         [
             f"{status_emoji(container.status)} <b>Контейнер:</b> {html.escape(title)}",
             f"<b>Сервис:</b> {html.escape(container.service_name)}",
@@ -126,7 +205,7 @@ def format_container_details(container: ContainerInfo) -> str:
             f"<b>Образ:</b> {html.escape(container.image)}",
             f"<b>Запущен:</b> {html.escape(format_datetime(container.started_at))}",
         ]
-    )
+    ))
 
 
 def format_stats(
@@ -135,11 +214,11 @@ def format_stats(
     title: str | None = None,
 ) -> str:
     title = title or ("Статистика сервиса" if service_name else "Статистика контейнеров")
-    lines = [f"<b>{title}</b>", ""]
+    lines = [f"<b>{html.escape(title)}</b>", ""]
 
     if not stats:
-        lines.append("Нет данных по контейнерам.")
-        return "\n".join(lines)
+        lines.append("Данные недоступны. Проверь состояние контейнеров и нажми «Обновить данные».")
+        return limit_html_message("\n".join(lines))
 
     blocks = []
     for item in stats:
@@ -147,8 +226,8 @@ def format_stats(
             "\n".join(
                 [
                     f"📊 {item.service_name}/{item.container_name}",
-                    f"CPU: {item.cpu_percent:.2f}%",
-                    f"RAM: {format_bytes(item.memory_usage)} / {format_bytes(item.memory_limit)} ({item.memory_percent:.2f}%)",
+                    f"CPU: {format_percent(item.cpu_percent)}",
+                    f"RAM: {format_memory_usage(item.memory_usage, item.memory_limit, item.memory_percent)}",
                     f"Сеть RX/TX: {format_bytes(item.network_rx)} / {format_bytes(item.network_tx)}",
                 ]
             )
@@ -157,7 +236,7 @@ def format_stats(
     lines.append("<pre>")
     lines.append(html.escape("\n\n".join(blocks)))
     lines.append("</pre>")
-    return "\n".join(lines)
+    return limit_html_message("\n".join(lines))
 
 
 def format_resources(snapshot: SystemSnapshot | None, stats: list[ContainerStats], *, top_limit: int = 5) -> str:
@@ -168,6 +247,7 @@ def format_resources(snapshot: SystemSnapshot | None, stats: list[ContainerStats
             [
                 "",
                 "<b>Хост:</b> системные метрики недоступны.",
+                "Проверь монтирование /proc и нажми «Обновить данные».",
             ]
         )
     else:
@@ -176,16 +256,16 @@ def format_resources(snapshot: SystemSnapshot | None, stats: list[ContainerStats
                 "",
                 f"<b>Хост:</b> {html.escape(snapshot.hostname)}",
                 (
-                    f"CPU: {usage_emoji(snapshot.cpu_percent)} {snapshot.cpu_percent:.1f}%"
-                    f"  |  среднее {snapshot.cpu_percent_avg_5m:.1f}%"
+                    f"CPU: {format_cpu_usage(snapshot.cpu_percent)}"
+                    f"  |  среднее {format_percent(snapshot.cpu_percent_avg_5m)}"
                 ),
                 (
                     f"Load: {load_emoji(snapshot.load_average_1m, snapshot.cpu_count)} "
                     f"{snapshot.load_average_1m:.2f} / {snapshot.cpu_count} CPU"
                 ),
                 (
-                    f"RAM: {usage_emoji(snapshot.memory_used_percent)} {format_bytes(snapshot.memory_used_bytes)}"
-                    f" / {format_bytes(snapshot.memory_total_bytes)} ({snapshot.memory_used_percent:.1f}%)"
+                    f"RAM: {usage_emoji(snapshot.memory_used_percent)} "
+                    f"{format_memory_usage(snapshot.memory_used_bytes, snapshot.memory_total_bytes, snapshot.memory_used_percent)}"
                 ),
             ]
         )
@@ -195,8 +275,14 @@ def format_resources(snapshot: SystemSnapshot | None, stats: list[ContainerStats
             )
 
     if not stats:
-        lines.extend(["", "<b>Контейнеры:</b> данных по ресурсам нет."])
-        return "\n".join(lines)
+        lines.extend(
+            [
+                "",
+                "<b>Контейнеры:</b> данных по ресурсам нет.",
+                "Убедись, что контейнеры запущены, и нажми «Обновить данные».",
+            ]
+        )
+        return limit_html_message("\n".join(lines))
 
     cpu_top = sorted(stats, key=lambda item: item.cpu_percent, reverse=True)[:top_limit]
     ram_top = sorted(stats, key=lambda item: item.memory_usage, reverse=True)[:top_limit]
@@ -205,14 +291,14 @@ def format_resources(snapshot: SystemSnapshot | None, stats: list[ContainerStats
     for item in cpu_top:
         lines.append(
             f"{usage_emoji(item.cpu_percent)} {html.escape(item.service_name)}/{html.escape(item.container_name)}"
-            f" — {item.cpu_percent:.2f}%"
+            f" — {format_percent(item.cpu_percent)}"
         )
 
     lines.extend(["", f"<b>Топ RAM</b>"])
     for item in ram_top:
         lines.append(
             f"{usage_emoji(item.memory_percent)} {html.escape(item.service_name)}/{html.escape(item.container_name)}"
-            f" — {format_bytes(item.memory_usage)} ({item.memory_percent:.2f}%)"
+            f" — {format_bytes(item.memory_usage)} ({format_percent(item.memory_percent)})"
         )
 
     total_memory = sum(item.memory_usage for item in stats)
@@ -223,7 +309,7 @@ def format_resources(snapshot: SystemSnapshot | None, stats: list[ContainerStats
             f"<b>RAM контейнеров суммарно:</b> {format_bytes(total_memory)}",
         ]
     )
-    return "\n".join(lines)
+    return limit_html_message("\n".join(lines))
 
 
 def format_logs_caption(service_name: str, tail: int) -> str:
@@ -238,17 +324,18 @@ def format_system_summary(snapshot: SystemSnapshot) -> str:
     lines = [
         f"Хост: <b>{html.escape(snapshot.hostname)}</b>",
         (
-            f"CPU: {usage_emoji(snapshot.cpu_percent)} {snapshot.cpu_percent:.1f}%"
+            f"CPU: {format_cpu_usage(snapshot.cpu_percent)}"
             f"  |  Load: {load_emoji(snapshot.load_average_1m, snapshot.cpu_count)} "
             f"{snapshot.load_average_1m:.2f} / {snapshot.cpu_count}"
         ),
         (
-            f"RAM: {usage_emoji(snapshot.memory_used_percent)} {format_bytes(snapshot.memory_used_bytes)}"
-            f" / {format_bytes(snapshot.memory_total_bytes)} ({snapshot.memory_used_percent:.1f}%)"
+            f"RAM: {usage_emoji(snapshot.memory_used_percent)} "
+            f"{format_memory_usage(snapshot.memory_used_bytes, snapshot.memory_total_bytes, snapshot.memory_used_percent)}"
         ),
         (
-            f"Среднее за 5 мин: CPU {usage_emoji(snapshot.cpu_percent_avg_5m)} {snapshot.cpu_percent_avg_5m:.1f}%"
-            f"  |  RAM {usage_emoji(snapshot.memory_used_percent_avg_5m)} {snapshot.memory_used_percent_avg_5m:.1f}%"
+            f"Среднее за 5 мин: CPU {format_cpu_usage(snapshot.cpu_percent_avg_5m)}"
+            f"  |  RAM {usage_emoji(snapshot.memory_used_percent_avg_5m)} "
+            f"{format_percent(snapshot.memory_used_percent_avg_5m)}"
         ),
         f"Диск {html.escape(snapshot.disk_usage.path_label if snapshot.disk_usage else '/')}:" f" {disk_text}",
         f"Uptime: {html.escape(format_duration(snapshot.uptime_seconds))}",
@@ -256,8 +343,8 @@ def format_system_summary(snapshot: SystemSnapshot) -> str:
 
     if snapshot.swap_total_bytes > 0:
         lines.append(
-            f"Swap: {usage_emoji(snapshot.swap_used_percent)} {format_bytes(snapshot.swap_used_bytes)}"
-            f" / {format_bytes(snapshot.swap_total_bytes)} ({snapshot.swap_used_percent:.1f}%)"
+            f"Swap: {usage_emoji(snapshot.swap_used_percent)} "
+            f"{format_memory_usage(snapshot.swap_used_bytes, snapshot.swap_total_bytes, snapshot.swap_used_percent)}"
         )
 
     return "\n".join(lines)
@@ -268,30 +355,29 @@ def format_system_details(snapshot: SystemSnapshot) -> str:
         f"🖥️ <b>Состояние сервера {html.escape(snapshot.hostname)}</b>",
         f"<b>Обновлено:</b> {html.escape(format_datetime(snapshot.collected_at))}",
         "",
-        f"<b>CPU:</b> {usage_emoji(snapshot.cpu_percent)} {snapshot.cpu_percent:.1f}% на {snapshot.cpu_count} CPU",
+        f"<b>CPU:</b> {format_cpu_usage(snapshot.cpu_percent)} на {snapshot.cpu_count} CPU",
         (
             f"<b>CPU среднее за 5 мин:</b> {usage_emoji(snapshot.cpu_percent_avg_5m)} "
-            f"{snapshot.cpu_percent_avg_5m:.1f}%"
+            f"{format_percent(snapshot.cpu_percent_avg_5m)}"
         ),
         (
             f"<b>Load average:</b> {load_emoji(snapshot.load_average_1m, snapshot.cpu_count)} "
             f"{snapshot.load_average_1m:.2f} / {snapshot.load_average_5m:.2f} / {snapshot.load_average_15m:.2f}"
         ),
         (
-            f"<b>RAM:</b> {usage_emoji(snapshot.memory_used_percent)} {format_bytes(snapshot.memory_used_bytes)}"
-            f" / {format_bytes(snapshot.memory_total_bytes)} ({snapshot.memory_used_percent:.1f}%)"
+            f"<b>RAM:</b> {usage_emoji(snapshot.memory_used_percent)} "
+            f"{format_memory_usage(snapshot.memory_used_bytes, snapshot.memory_total_bytes, snapshot.memory_used_percent)}"
         ),
         (
             f"<b>RAM среднее за 5 мин:</b> {usage_emoji(snapshot.memory_used_percent_avg_5m)} "
-            f"{snapshot.memory_used_percent_avg_5m:.1f}%"
+            f"{format_percent(snapshot.memory_used_percent_avg_5m)}"
         ),
         (
             f"<b>RAM свободно:</b> {format_bytes(snapshot.memory_available_bytes)}"
         ),
         (
             f"<b>Swap:</b> {usage_emoji(snapshot.swap_used_percent) if snapshot.swap_total_bytes > 0 else '⚪'} "
-            f"{format_bytes(snapshot.swap_used_bytes)} / {format_bytes(snapshot.swap_total_bytes)}"
-            f" ({snapshot.swap_used_percent:.1f}%)"
+            f"{format_memory_usage(snapshot.swap_used_bytes, snapshot.swap_total_bytes, snapshot.swap_used_percent)}"
         ),
     ]
 
@@ -319,7 +405,7 @@ def format_system_details(snapshot: SystemSnapshot) -> str:
             ),
         ]
     )
-    return "\n".join(lines)
+    return limit_html_message("\n".join(lines))
 
 
 def format_datetime(value: datetime | None) -> str:
@@ -384,7 +470,7 @@ def load_emoji(load_average: float, cpu_count: int) -> str:
 def format_disk_summary(disk_usage: DiskUsage) -> str:
     return (
         f"{usage_emoji(disk_usage.used_percent)} {format_bytes(disk_usage.used_bytes)}"
-        f" / {format_bytes(disk_usage.total_bytes)} ({disk_usage.used_percent:.1f}%)"
+        f" / {format_bytes(disk_usage.total_bytes)} ({format_percent(disk_usage.used_percent)})"
     )
 
 

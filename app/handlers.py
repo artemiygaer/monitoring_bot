@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 import logging
 import os
 import sys
@@ -14,7 +13,7 @@ from time import monotonic
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, FSInputFile, Message, ReplyKeyboardMarkup
+from aiogram.types import FSInputFile, Message, ReplyKeyboardMarkup
 from docker.errors import DockerException
 
 from app.access import AccessMiddleware
@@ -34,6 +33,7 @@ from app.formatters import (
     format_duration,
     format_logs_caption,
     format_overview,
+    limit_html_message,
     format_resources,
     format_service_details,
     format_stats,
@@ -42,6 +42,7 @@ from app.formatters import (
     status_emoji,
 )
 from app.host_command_executor import HostCommandExecutor
+from app.inline_handlers import InlineController
 from app.keyboards import (
     ACTION_ALL_CONTAINERS,
     ACTION_BACK,
@@ -135,6 +136,14 @@ def create_router(
     router = Router(name="monitoring")
     router.message.middleware(AccessMiddleware(settings.allowed_user_ids))
     router.callback_query.middleware(AccessMiddleware(settings.allowed_user_ids))
+    inline = InlineController(
+        monitor=monitor,
+        system_monitor=system_monitor,
+        login_monitor=login_monitor,
+        command_executor=command_executor,
+        settings=settings,
+    )
+    inline.register(router)
 
     sessions: dict[int, ChatSession] = {}
     started_at = datetime.now(monitor.timezone)
@@ -149,7 +158,6 @@ def create_router(
         if stale_keys:
             for chat_id in stale_keys:
                 del sessions[chat_id]
-            gc.collect()
 
     def get_session(chat_id: int) -> ChatSession:
         _cleanup_stale_sessions()
@@ -175,7 +183,7 @@ def create_router(
         *,
         track: bool = True,
     ) -> Message:
-        sent = await message.answer(text, reply_markup=reply_markup)
+        sent = await message.answer(limit_html_message(text), reply_markup=reply_markup)
         if track:
             remember_message_id(session.bot_message_ids, sent.message_id)
         return sent
@@ -189,7 +197,11 @@ def create_router(
         *,
         track: bool = True,
     ) -> Message:
-        sent = await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        sent = await bot.send_message(
+            chat_id=chat_id,
+            text=limit_html_message(text),
+            reply_markup=reply_markup,
+        )
         if track:
             remember_message_id(session.bot_message_ids, sent.message_id)
         return sent
@@ -436,7 +448,7 @@ def create_router(
             session,
             (
                 "Не удалось получить данные из Docker. "
-                "Проверь доступ к /var/run/docker.sock и переменную MONITOR_DOCKER_PROJECT."
+                "Проверь доступ бота к Docker и выбранный Compose-проект."
             ),
             reply_markup=current_keyboard(session),
         )
@@ -448,13 +460,16 @@ def create_router(
             session,
             (
                 "Не удалось получить системные метрики. "
-                "Проверь read-only mounts для MONITOR_SYSTEM_PROC_PATH и MONITOR_SYSTEM_DISK_PATH."
+                "Проверь read-only монтирование /proc и корня хоста."
             ),
             reply_markup=current_keyboard(session),
         )
 
     async def send_lookup_error(message: Message, session: ChatSession, error: LookupError) -> None:
-        available = ", ".join(service_display_name(service, show_project=True) for service in list_services(session)) or "сервисов нет"
+        services = await asyncio.to_thread(list_services, session)
+        available = ", ".join(
+            service_display_name(service, show_project=True) for service in services
+        ) or "сервисов нет"
         await send_text(
             message,
             session,
@@ -494,20 +509,24 @@ def create_router(
 
         for line in text.splitlines():
             piece = f"{line}\n"
-            if len(current) + len(piece) > limit and current:
-                chunks.append(current.rstrip())
-                current = piece
-                continue
-
-            if len(piece) > limit:
+            if len(escape(piece)) > limit:
                 if current:
                     chunks.append(current.rstrip())
                     current = ""
-                start = 0
-                while start < len(piece):
-                    chunks.append(piece[start : start + limit].rstrip())
-                    start += limit
+                part = ""
+                for character in piece:
+                    if part and len(escape(part + character)) > limit:
+                        chunks.append(part.rstrip())
+                        part = character
+                    else:
+                        part += character
+                if part:
+                    current = part
                 continue
+
+            if len(escape(current + piece)) > limit and current:
+                chunks.append(current.rstrip())
+                current = ""
 
             current += piece
 
@@ -551,7 +570,7 @@ def create_router(
                 "⚠️ <b>Подтверждение перезапуска</b>",
                 f"<b>Контейнер:</b> {escape(title)}",
                 "Перезапуск может временно прервать соединения и работу зависящих сервисов.",
-                "Нажми `Подтвердить перезапуск`, если точно хочешь продолжить.",
+                "Нажми «Подтвердить перезапуск», если точно хочешь продолжить.",
             ]
         )
 
@@ -572,7 +591,7 @@ def create_router(
                 "Команда будет запущена на самом сервере.",
                 "<b>Команда:</b>",
                 f"<pre>{escape(command)}</pre>",
-                "Нажми `Выполнить команду`, если хочешь продолжить.",
+                "Нажми «Выполнить команду», если хочешь продолжить.",
             ]
         )
 
@@ -594,7 +613,7 @@ def create_router(
                 f"<b>Куда сохранить:</b> <code>{escape(settings.backup_target_dir)}</code>",
                 f"<b>Таймаут:</b> {settings.backup_timeout_seconds} сек.",
                 "Будет создан tar-архив со всем содержимым директории.",
-                "Нажми `Создать бекап`, если хочешь продолжить.",
+                "Нажми «Создать бекап», если хочешь продолжить.",
             ]
         )
 
@@ -660,7 +679,7 @@ def create_router(
                 "⚠️ <b>Подтверждение удаления бекапа</b>",
                 build_backup_archive_details(archive),
                 "Файл будет удалён с сервера без восстановления.",
-                "Нажми `Подтвердить удаление`, если точно хочешь продолжить.",
+                "Нажми «Подтвердить удаление», если точно хочешь продолжить.",
             ]
         )
 
@@ -780,7 +799,7 @@ def create_router(
             [
                 "",
                 "Удаляются каталоги <code>__pycache__</code>, <code>.pytest_cache</code> и директории <code>tmp*</code> внутри указанного пути.",
-                "Нажми `Подтвердить очистку`, если хочешь продолжить.",
+                "Нажми «Подтвердить очистку», если хочешь продолжить.",
             ]
         )
         return "\n".join(lines)
@@ -815,14 +834,15 @@ def create_router(
         session.current_log_return_screen = None
         session.current_backup_name = None
         session.pending_command = None
-        await send_text(message, session, build_overview_text(session), reply_markup=current_keyboard(session))
+        overview = await asyncio.to_thread(build_overview_text, session)
+        await send_text(message, session, overview, reply_markup=current_keyboard(session))
 
     async def show_resources_page(message: Message, session: ChatSession) -> None:
         session.screen = "resources"
         session.option_map.clear()
         session.current_stats_payload = None
         session.current_stats_return_screen = None
-        snapshot = get_active_system_monitor(session).get_snapshot()
+        snapshot = await asyncio.to_thread(get_active_system_monitor(session).get_snapshot)
         stats = await asyncio.to_thread(get_active_monitor(session).get_service_stats)
         await send_text(
             message,
@@ -833,7 +853,7 @@ def create_router(
 
     async def show_services_menu(message: Message, session: ChatSession) -> None:
         session.screen = "services_menu"
-        session.option_map = build_service_option_map("status", session)
+        session.option_map = await asyncio.to_thread(build_service_option_map, "status", session)
         session.current_service_payload = None
         await send_text(
             message,
@@ -843,7 +863,7 @@ def create_router(
         )
 
     async def show_service_details(message: Message, session: ChatSession, payload: str) -> None:
-        service = get_service_by_payload(payload, session)
+        service = await asyncio.to_thread(get_service_by_payload, payload, session)
         session.screen = "service_detail"
         session.option_map.clear()
         session.current_service_payload = payload
@@ -862,14 +882,14 @@ def create_router(
         return_screen: str = "home",
     ) -> None:
         session.screen = "containers_menu"
-        session.option_map = build_container_option_map(service_payload, session)
+        session.option_map = await asyncio.to_thread(build_container_option_map, service_payload, session)
         session.current_container_id = None
         session.current_container_filter_payload = service_payload
         session.current_container_return_screen = return_screen
 
         text = "Выбери контейнер, чтобы посмотреть состояние и доступные действия."
         if service_payload is not None:
-            service = get_service_by_payload(service_payload, session)
+            service = await asyncio.to_thread(get_service_by_payload, service_payload, session)
             text = (
                 "Выбери контейнер сервиса "
                 f"{escape(service_display_name(service, show_project=True))}, чтобы посмотреть состояние и действия."
@@ -883,7 +903,7 @@ def create_router(
         )
 
     async def show_container_details(message: Message, session: ChatSession, container_id: str) -> None:
-        container = get_container_by_id(container_id, session)
+        container = await asyncio.to_thread(get_container_by_id, container_id, session)
         session.screen = "container_detail"
         session.option_map.clear()
         session.current_container_id = container_id
@@ -899,7 +919,7 @@ def create_router(
             await show_services_menu(message, session)
             return
 
-        container = get_container_by_id(session.current_container_id, session)
+        container = await asyncio.to_thread(get_container_by_id, session.current_container_id, session)
         session.screen = "restart_confirm"
         await send_text(
             message,
@@ -913,7 +933,11 @@ def create_router(
             await show_services_menu(message, session)
             return
 
-        container = get_active_monitor(session).restart_container(session.current_container_id, settings.restart_timeout_seconds)
+        container = await asyncio.to_thread(
+            get_active_monitor(session).restart_container,
+            session.current_container_id,
+            settings.restart_timeout_seconds,
+        )
         session.screen = "container_detail"
         await send_text(
             message,
@@ -929,7 +953,7 @@ def create_router(
 
     async def show_stats_menu(message: Message, session: ChatSession) -> None:
         session.screen = "stats_menu"
-        session.option_map = build_service_option_map("stats", session)
+        session.option_map = await asyncio.to_thread(build_service_option_map, "stats", session)
         session.current_stats_payload = None
         session.current_stats_return_screen = None
         await send_text(
@@ -940,7 +964,7 @@ def create_router(
         )
 
     async def show_service_stats(message: Message, session: ChatSession, payload: str, return_screen: str) -> None:
-        service = get_service_by_payload(payload, session)
+        service = await asyncio.to_thread(get_service_by_payload, payload, session)
         stats = await asyncio.to_thread(
             get_active_monitor(session).get_service_stats_by_ref,
             service.project_name,
@@ -958,7 +982,7 @@ def create_router(
         )
 
     async def show_container_stats(message: Message, session: ChatSession, container_id: str, return_screen: str) -> None:
-        container = get_container_by_id(container_id, session)
+        container = await asyncio.to_thread(get_container_by_id, container_id, session)
         container_stats = await asyncio.to_thread(get_active_monitor(session).get_container_stats, container_id)
         stats = [container_stats]
         session.screen = "stats_detail"
@@ -975,11 +999,12 @@ def create_router(
     async def show_system_page(message: Message, session: ChatSession) -> None:
         session.screen = "system"
         session.option_map.clear()
-        await send_text(message, session, build_system_text(session), reply_markup=current_keyboard(session))
+        text = await asyncio.to_thread(build_system_text, session)
+        await send_text(message, session, text, reply_markup=current_keyboard(session))
 
     async def show_logs_source_menu(message: Message, session: ChatSession) -> None:
         session.screen = "logs_source_menu"
-        session.option_map = build_service_option_map("logsrc", session)
+        session.option_map = await asyncio.to_thread(build_service_option_map, "logsrc", session)
         session.current_log_descriptor = None
         session.current_log_tail = None
         session.current_log_return_screen = None
@@ -1007,13 +1032,17 @@ def create_router(
         if source_kind == "all":
             text = "Сколько строк показать для всех контейнеров?"
         elif source_kind == "container":
-            container = get_container_by_id(service_name or "", session)
+            container = await asyncio.to_thread(get_container_by_id, service_name or "", session)
             container_title = container.name
             if container.project_name:
                 container_title = f"{container.project_name}/{container.service_name}/{container.name}"
             text = f"Сколько строк логов показать для контейнера {escape(container_title)}?"
         else:
-            service = get_active_monitor(session).get_service_by_ref(project_name, service_name or "")
+            service = await asyncio.to_thread(
+                get_active_monitor(session).get_service_by_ref,
+                project_name,
+                service_name or "",
+            )
             text = (
                 "Сколько строк логов показать для сервиса "
                 f"{escape(service_display_name(service, show_project=True))}?"
@@ -1030,15 +1059,31 @@ def create_router(
         source_kind, project_name, service_name = parse_log_source_descriptor(descriptor)
         active_mon = get_active_monitor(session)
         if source_kind == "all":
-            logs_text = active_mon.get_all_logs(tail)
+            logs_text = await asyncio.to_thread(active_mon.get_all_logs, tail)
         elif source_kind == "container":
-            _, logs_text = active_mon.get_container_logs(service_name or "", tail)
+            _, logs_text = await asyncio.to_thread(
+                active_mon.get_container_logs,
+                service_name or "",
+                tail,
+            )
         else:
-            _, logs_text = active_mon.get_service_logs_by_ref(project_name, service_name or "", tail)
+            _, logs_text = await asyncio.to_thread(
+                active_mon.get_service_logs_by_ref,
+                project_name,
+                service_name or "",
+                tail,
+            )
 
         await delete_log_messages(message.bot, message.chat.id, session)
 
-        title = build_log_title(source_kind, project_name, service_name, tail)
+        title = await asyncio.to_thread(
+            build_log_title,
+            source_kind,
+            project_name,
+            service_name,
+            tail,
+            session,
+        )
         chunks = split_text(logs_text, max(800, min(settings.max_inline_log_chars, 2800)))
         session.screen = "logs_tail_menu"
         session.current_log_tail = tail
@@ -1108,7 +1153,8 @@ def create_router(
         session.option_map.clear()
         session.current_backup_name = None
         session.pending_command = None
-        await send_text(message, session, build_backup_menu_text(), reply_markup=current_keyboard(session))
+        text = await asyncio.to_thread(build_backup_menu_text)
+        await send_text(message, session, text, reply_markup=current_keyboard(session))
 
     async def show_backup_archive_menu(message: Message, session: ChatSession, action_name: str) -> None:
         if action_name == "backup_download":
@@ -1118,9 +1164,10 @@ def create_router(
             session.screen = "backup_delete_menu"
             title = "Удалить бекап"
 
-        session.option_map = build_backup_option_map(action_name, session)
+        session.option_map = await asyncio.to_thread(build_backup_option_map, action_name, session)
         session.current_backup_name = None
-        await send_text(message, session, build_backup_select_text(title), reply_markup=current_keyboard(session))
+        text = await asyncio.to_thread(build_backup_select_text, title, session)
+        await send_text(message, session, text, reply_markup=current_keyboard(session))
 
     async def show_backup_confirm(message: Message, session: ChatSession) -> None:
         session.screen = "backup_confirm"
@@ -1177,7 +1224,7 @@ def create_router(
             remember_message_id(session.command_message_ids, sent.message_id)
 
     async def send_backup_archive(message: Message, session: ChatSession, archive_name: str) -> None:
-        archive = get_backup_by_name(archive_name, session)
+        archive = await asyncio.to_thread(get_backup_by_name, archive_name, session)
         session.screen = "backup_menu"
         session.option_map.clear()
         session.current_backup_name = None
@@ -1189,7 +1236,7 @@ def create_router(
             ]
         )
 
-        if archive.size_bytes > 200 * 1024 * 1024:
+        if archive.size_bytes > 50 * 1024 * 1024:
             await send_text(
                 message,
                 session,
@@ -1225,7 +1272,7 @@ def create_router(
         remember_message_id(session.bot_message_ids, sent.message_id)
 
     async def show_backup_delete_confirm(message: Message, session: ChatSession, archive_name: str) -> None:
-        archive = get_backup_by_name(archive_name, session)
+        archive = await asyncio.to_thread(get_backup_by_name, archive_name, session)
         session.screen = "backup_delete_confirm"
         session.option_map.clear()
         session.current_backup_name = archive.name
@@ -1281,7 +1328,8 @@ def create_router(
     async def show_about_page(message: Message, session: ChatSession) -> None:
         session.screen = "about"
         session.option_map.clear()
-        await send_text(message, session, build_about_text(), reply_markup=current_keyboard(session))
+        text = await asyncio.to_thread(build_about_text, session)
+        await send_text(message, session, text, reply_markup=current_keyboard(session))
 
     async def show_system_menu(message: Message, session: ChatSession) -> None:
         session.screen = "system"
@@ -1293,12 +1341,14 @@ def create_router(
     async def show_failed_logins_page(message: Message, session: ChatSession) -> None:
         session.screen = "failed_logins"
         session.option_map.clear()
-        await send_text(message, session, build_failed_logins_text(), reply_markup=current_keyboard(session))
+        text = await asyncio.to_thread(build_failed_logins_text)
+        await send_text(message, session, text, reply_markup=current_keyboard(session))
 
     async def show_cleanup_confirm(message: Message, session: ChatSession) -> None:
         session.screen = "cleanup_confirm"
         session.option_map.clear()
-        await send_text(message, session, build_cleanup_confirm_text(), reply_markup=current_keyboard(session))
+        text = await asyncio.to_thread(build_cleanup_confirm_text)
+        await send_text(message, session, text, reply_markup=current_keyboard(session))
 
     async def run_cleanup(message: Message, session: ChatSession) -> None:
         cleanup_command = build_cleanup_command(settings.cleanup_path)
@@ -1536,25 +1586,9 @@ def create_router(
                 "Бот мониторинга запущен. Управление находится в нижнем меню.",
                 reply_markup=build_main_menu(include_clear_chat=has_tracked_chat(session)),
             )
-            await send_overview(message, session)
+            await inline.show_home(message)
         except DockerException:
             await send_docker_error(message, session)
-
-    @router.callback_query()
-    async def legacy_callback_handler(callback: CallbackQuery) -> None:
-        if callback.message is None:
-            await callback.answer("Используй нижнее меню.")
-            return
-
-        session = get_session(callback.message.chat.id)
-        await callback.answer("Интерфейс обновлён. Используй нижнее меню.", show_alert=True)
-        await send_chat_text(
-            callback.bot,
-            callback.message.chat.id,
-            session,
-            "Управление ботом теперь находится в нижнем меню.",
-            reply_markup=current_keyboard(session),
-        )
 
     @router.message()
     async def text_handler(message: Message) -> None:
@@ -1564,47 +1598,47 @@ def create_router(
 
         try:
             if text == MENU_OVERVIEW:
-                await send_overview(message, session)
+                await inline.show_home(message)
                 return
 
             if text == MENU_RESOURCES:
-                await show_resources_page(message, session)
+                await inline.show_resources(message)
                 return
 
             if text == MENU_CONTAINERS:
-                await show_containers_menu(message, session)
+                await inline.show_containers(message)
                 return
 
             if text == MENU_COMMANDS:
-                await show_commands_intro(message, session)
+                await inline.show_command_input(message)
                 return
 
             if text == MENU_BACKUP:
-                await show_backup_menu(message, session)
+                await inline.show_backup(message)
                 return
 
             if text == MENU_FAILED_LOGINS:
-                await show_failed_logins_page(message, session)
+                await inline.show_failed_logins(message)
                 return
 
             if text == MENU_CLEANUP:
-                await show_cleanup_confirm(message, session)
+                await inline.show_cleanup_confirmation(message)
                 return
 
             if text == MENU_SYSTEM:
-                await show_system_menu(message, session)
+                await inline.show_system(message)
                 return
 
             if text == MENU_ABOUT:
-                await show_about_page(message, session)
+                await inline.show_about(message)
                 return
 
             if text == MENU_REFRESH:
-                await handle_refresh(message, session)
+                await inline.refresh_from_message(message)
                 return
 
             if text == ACTION_BACK:
-                await handle_back(message, session)
+                await inline.back_from_message(message)
                 return
 
             if text == ACTION_CLEAR_CHAT:
@@ -1612,22 +1646,10 @@ def create_router(
                 return
 
             if text == ACTION_CANCEL:
-                if session.screen == "restart_confirm" and session.current_container_id is not None:
-                    await show_container_details(message, session, session.current_container_id)
-                    return
-                if session.screen == "command_confirm":
-                    await show_commands_intro(message, session)
-                    return
-                if session.screen == "backup_confirm":
-                    await show_backup_menu(message, session)
-                    return
-                if session.screen == "backup_delete_confirm":
-                    await show_backup_archive_menu(message, session, "backup_delete")
-                    return
-                if session.screen == "cleanup_confirm":
-                    await send_overview(message, session)
-                    return
-                await handle_back(message, session)
+                await inline.back_from_message(message)
+                return
+
+            if await inline.accept_command_text(message):
                 return
 
             if text == ACTION_RESTART_CONTAINER and session.screen == "container_detail":
